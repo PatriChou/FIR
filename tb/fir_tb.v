@@ -20,7 +20,7 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 
-module fir_tb_my
+module fir_tb
 #(  parameter pADDR_WIDTH = 12,
     parameter pDATA_WIDTH = 32,
     parameter Tape_Num    = 11,
@@ -162,8 +162,6 @@ module fir_tb_my
         end
     end
 
-// modify from here
-
     integer i;
     initial begin
         $display("------------Start simulation-----------");
@@ -178,15 +176,14 @@ module fir_tb_my
     end
 
     integer k;
+    integer sm_idx;
     reg error;
     reg status_error;
 	 reg error_coef;
     initial begin
         error = 0; status_error = 0;
-        sm_tready = 1;
-        wait (sm_tvalid);
-        for(k=0;k < data_length;k=k+1) begin
-            sm(golden_list[k],k);
+        for(sm_idx=0;sm_idx < data_length;sm_idx=sm_idx+1) begin
+            sm(golden_list[sm_idx],sm_idx);
         end
         config_read_check(12'h00, 32'h02, 32'h0000_0002); // check ap_done = 1 (0x00 [bit 1])
         config_read_check(12'h00, 32'h04, 32'h0000_0004); // check ap_idle = 1 (0x00 [bit 2])
@@ -252,12 +249,68 @@ module fir_tb_my
         input [11:0]    addr;
         input [31:0]    data;
         begin
+            @(posedge axis_clk);
             awvalid <= 0; wvalid <= 0;
-            @(posedge axis_clk);
-            awvalid <= 1; awaddr <= addr;
-            wvalid  <= 1; wdata <= data;
-            @(posedge axis_clk);
-            while (!wready) @(posedge axis_clk);
+            if({$random}%2) begin
+                // send data
+                awaddr <= addr;
+                repeat({$random}%6+1) @(posedge axis_clk);
+                awvalid <= 1;
+                @(posedge axis_clk);
+                while(!awready) begin
+                    @(posedge axis_clk);
+                    awvalid <= 0;
+                    repeat({$random}%10+1) @(posedge axis_clk);
+                    awvalid <= 1;
+                end
+                @(posedge axis_clk);
+                awvalid <= 0; 
+
+                // send data
+                @(posedge axis_clk);
+                wdata <= data;
+                repeat({$random}%6+1) @(posedge axis_clk);
+                wvalid  <= 1;
+                @(posedge axis_clk);
+                while(!wready) begin
+                    @(posedge axis_clk);
+                    wvalid <= 0;
+                    repeat({$random}%10+1) @(posedge axis_clk);
+                    wvalid  <= 1;
+                end
+                @(posedge axis_clk);
+                wvalid <= 0;
+            end
+            else begin
+                // send data
+                @(posedge axis_clk);
+                wdata <= data;
+                repeat({$random}%6+1) @(posedge axis_clk);
+                wvalid  <= 1;
+                @(posedge axis_clk);
+                while(!wready) begin
+                    @(posedge axis_clk);
+                    wvalid <= 0;
+                    repeat({$random}%10+1) @(posedge axis_clk);
+                    wvalid  <= 1;
+                end
+                @(posedge axis_clk);
+                wvalid <= 0;
+
+                // send data
+                awaddr <= addr;
+                repeat({$random}%6+1) @(posedge axis_clk);
+                awvalid <= 1;
+                @(posedge axis_clk);
+                while(!awready) begin
+                    @(posedge axis_clk);
+                    awvalid <= 0;
+                    repeat({$random}%10+1) @(posedge axis_clk);
+                    awvalid <= 1;
+                end
+                @(posedge axis_clk);
+                awvalid <= 0;
+            end
         end
     endtask
 
@@ -267,12 +320,30 @@ module fir_tb_my
         input [31:0]        mask;
         begin
             arvalid <= 0;
+            // send data
+            araddr <= addr;
+            repeat({$random}%8+1) @(posedge axis_clk);
+            arvalid  <= 1;
             @(posedge axis_clk);
-            arvalid <= 1; araddr <= addr;
+            while(arready === 1'b0) begin
+                @(posedge axis_clk);
+                arvalid <= 0;
+                repeat({$random}%8+1) @(posedge axis_clk);
+                arvalid  <= 1;
+            end
+            @(posedge axis_clk);
+            arvalid  <= 0;
+
+            // recv data
+            rready <= 0;
+            repeat({$random}%8+1) @(posedge axis_clk);
             rready <= 1;
             @(posedge axis_clk);
             while (!rvalid) @(posedge axis_clk);
-            if( (rdata & mask) != (exp_data & mask)) begin
+            @(posedge axis_clk);
+            rready <= 0;
+
+            if( (rdata & mask) !== (exp_data & mask)) begin
                 $display("ERROR: exp = %d, rdata = %d", exp_data, rdata);
                 error_coef <= 1;
             end else begin
@@ -281,17 +352,18 @@ module fir_tb_my
         end
     endtask
 
-
-
     task ss;
         input  signed [31:0] in1;
         begin
-            ss_tvalid <= 1;
+            // send data
             ss_tdata  <= in1;
-            @(posedge axis_clk);
-            while (!ss_tready) begin
-                @(posedge axis_clk);
-            end
+            repeat({$random}%10+1) @(posedge axis_clk);
+            ss_tvalid <= 0; 
+            repeat({$random}%10+1) @(posedge axis_clk);
+            ss_tvalid  <= 1;
+            wait(ss_tready);
+            @(posedge axis_clk)
+            ss_tvalid <= 0;
         end
     endtask
 
@@ -299,18 +371,23 @@ module fir_tb_my
         input  signed [31:0] in2; // golden data
         input         [31:0] pcnt; // pattern count
         begin
-            sm_tready <= 1;
-            @(posedge axis_clk) 
+            // recv data
+            repeat({$random}%10+1) @(posedge axis_clk);
+            sm_tready <= 0;
+            repeat({$random}%25) @(posedge axis_clk);
+            sm_tready  <= 1;
             wait(sm_tvalid);
-            while(!sm_tvalid) @(posedge axis_clk);
-            if (sm_tdata != in2) begin
+
+            if (sm_tdata !== in2) begin
                 $display("[ERROR] [Pattern %d] Golden answer: %d, Your answer: %d", pcnt, in2, sm_tdata);
                 error <= 1;
             end
             else begin
                 $display("[PASS] [Pattern %d] Golden answer: %d, Your answer: %d", pcnt, in2, sm_tdata);
             end
+            
             @(posedge axis_clk);
+            sm_tready <= 0;
         end
     endtask
 endmodule
