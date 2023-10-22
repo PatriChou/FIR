@@ -64,7 +64,7 @@ wire            Yn_trans;
 wire            Xn_recv;
 
 wire    [4:0]   tap_A_fsm_cnt_offset;
-wire    [31:0]  adder_result, multi_result;
+wire	[31:0]  adder_result;
 wire    [31:0]  data_multi;
 wire    [31:0]  adder_in;
 
@@ -76,6 +76,8 @@ reg     [11:0]  ar_data;
 reg             ar_got;
 reg             ar_trans;
 reg             ar_ready;
+
+reg	[31:0]	multi_result;
 
 reg     [2:0]   curr_state, next_state;
 reg     [3:0]   fsm_cnt;
@@ -135,7 +137,7 @@ always@(*) begin
                                      LOAD_PASS_ST;
         end
         CALCU_ST: begin             //Calculate the Yn 
-            next_state = (fsm_cnt == 4'd10)? (sm_tvalid && !sm_tready)? FULL_ST:LOAD_PASS_ST :
+            next_state = (fsm_cnt == 4'd11)? (sm_tvalid && !sm_tready)? FULL_ST:LOAD_PASS_ST :
                                              CALCU_ST;
         end
         FULL_ST: begin              //Yn_lock didnt transferred and Yn_acc is finish        //Yn_acc needs to lock (adder must be 0)
@@ -151,9 +153,12 @@ end
 // ================ CALCULATE ================
 assign data_multi = (curr_state == CALCU_ST && fsm_cnt == 4'd0)? data_first:
                                                                  data_Do;
-assign multi_result = data_multi * tap_Do;
-assign adder_in = (curr_state == CALCU_ST)? multi_result:
-                                            32'd0;
+always@(posedge clk) begin
+	multi_result <= data_multi * tap_Do;
+end
+
+assign adder_in = (curr_state == CALCU_ST && fsm_cnt >= 4'd1)? multi_result:
+                                                               32'd0;
 assign adder_result = Yn_acc + adder_in;
 
 always@(posedge clk or negedge rst_n) begin                         //Yn_acc
@@ -271,7 +276,7 @@ assign sm_tlast = ( Yn_lock_valid && (data_length == 32'd1) )? 1'b1 : 1'b0;
 always@(posedge clk or negedge rst_n) begin     //Yn_lock
     if(!rst_n) 
         Yn_lock <= 32'd0;
-    else if(curr_state == CALCU_ST && fsm_cnt == 4'd10 && next_state == LOAD_PASS_ST)
+    else if(curr_state == CALCU_ST && fsm_cnt == 4'd11 && next_state == LOAD_PASS_ST)
         Yn_lock <= adder_result;
     else if((curr_state == FULL_ST && next_state == LOAD_PASS_ST))
         Yn_lock <= Yn_acc;
@@ -282,7 +287,7 @@ end
 always@(posedge clk or negedge rst_n) begin     //Yn_lock_valid
     if(!rst_n) 
         Yn_lock_valid <= 1'b0;
-    else if( (curr_state == CALCU_ST && fsm_cnt == 4'd10) || (curr_state == FULL_ST && next_state == LOAD_PASS_ST) )
+    else if( (curr_state == CALCU_ST && fsm_cnt == 4'd11) || (curr_state == FULL_ST && next_state == LOAD_PASS_ST) )
         Yn_lock_valid <= 1'b1;
     else if(Yn_trans)
         Yn_lock_valid <= 1'b0;
@@ -367,7 +372,7 @@ end
 
 // ================ Tap ================
 assign tap_EN = 1'b1;
-assign tap_WE = (AXIWR_tx_trans && (awaddr >= 12'h020) )? {4{1'b1}} : {4{1'b0}}; 
+assign tap_WE = (AXIWR_tx_trans)? {4{1'b1}} : {4{1'b0}}; 
 
 // ==== tap_Di ====
 
@@ -391,7 +396,7 @@ end
 */
 
 // ==== tap_A ====
-assign tap_A_fsm_cnt_offset = (fsm_cnt == 4'd10)? 4'd0:
+assign tap_A_fsm_cnt_offset = (fsm_cnt == 4'd9)? 4'd0:
                                                  fsm_cnt + 4'd1;
 
 always@(*) begin
@@ -399,7 +404,7 @@ always@(*) begin
         tap_A = {6'd0, tap_A_fsm_cnt_offset, 2'd0};
     else if(curr_state == LOAD_PASS_ST && Xn_recv)                //tap ram need to be prepared in load_pass_st
         tap_A = 12'd0;
-    else if(AXIWR_tx_trans)          //tap ram will delay one cycle to read, so it must have stall cycle.
+    else if(AXIWR_tx_trans && (aw_data >= 12'h020) )          //tap ram will delay one cycle to read, so it must have stall cycle.
         tap_A = aw_data - 12'b0000_0010_0000;        
     else if(arready && arvalid && (araddr >= 12'h020) )
         tap_A = araddr - 12'b0000_0010_0000;
@@ -407,24 +412,6 @@ always@(*) begin
         tap_A = 12'd0;
 end
 
-/*
-always@(posedge clk or negedge rst_n) begin
-	if(!rst_n)
-		tap_A <= 12'd0;
-	else if(axiwr_curr_state == AXIWR_STALL_ST)        //tap ram will delay one cycle to read, so it must have stall cycle.
-        tap_A <= aw_data - 12'b0000_0010_0000;
-    else if(ar_got && (araddr >= 12'h020))
-        tap_A <= ar_data - 12'b0000_0010_0000;
-    else if(next_state == LOAD_PASS_ST)                //tap ram need to be prepared in load_pass_st
-        tap_A <= 12'd0;
-    else if(curr_state == CALCU_ST)
-        tap_A <= {4'd0, tap_A_fsm_cnt_offset, 2'd0};
-    else if(next_state == CALCU_ST)
-        tap_A <= 12'h004;
-    else
-        tap_A <= tap_A;
-end
-*/
 // ================ data_length ================
 always@(posedge clk or negedge rst_n) begin     
     if(!rst_n)
@@ -454,6 +441,17 @@ end
 // ================ AXI RD ================
 
 assign arready = ( axiwr_curr_state == AXIWR_TX_DATA_ST || (curr_state == CALCU_ST && fsm_cnt <= 4'd9) || (curr_state == LOAD_PASS_ST && Xn_recv) )? 1'b0 : (ar_trans)? 1'b0 : 1'b1;
+
+/*
+always@(posedge clk or negedge rst_n) begin         //arready
+    if(!rst_n)
+    	arready <= 1'b0;
+    else if(axiwr_next_state == AXIWR_TX_DATA_ST || (curr_state == CALCU_ST && fsm_cnt <= 4'd8) || (curr_state == LOAD_PASS_ST) || (arready && arvalid) )
+        arready <= 1'b0;
+    else
+        arready <= 1'b1;
+end
+*/
 
 always@(posedge clk or negedge rst_n) begin         //ar_data
     if(!rst_n)
@@ -486,9 +484,9 @@ always@(posedge clk or negedge rst_n) begin     //rdata
     if(!rst_n)
         rdata <= 32'd0;
     else if(ar_trans) begin
-        case(ar_data)
-            12'h000: begin rdata <= {29'd0, ap_idle, ap_done, ap_start}; end
-            12'h010: begin rdata <= data_length; end
+        case(ar_data[7:0])
+            8'h00: begin rdata <= {29'd0, ap_idle, ap_done, ap_start}; end
+            8'h10: begin rdata <= data_length; end
             default: begin rdata <= tap_Do; end
         endcase
     end 
@@ -496,4 +494,7 @@ always@(posedge clk or negedge rst_n) begin     //rdata
         rdata <= rdata;
 end
 
+
+
 endmodule
+
